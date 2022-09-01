@@ -1,0 +1,70 @@
+version: "3"
+
+networks:
+  nginx_network:
+    driver: bridge
+  mysql_network:
+    driver: bridge
+  redis_network: 
+    driver: bridge
+
+services:
+  redis:
+    image: redis
+    ports:
+      - 6379:6379
+    networks:
+      - redis_network
+    command: redis-server /etc/redis/redis.conf
+    volumes:
+      - ./compose/redis/data:/data
+      - ./compose/redis/conf/redis.conf:/etc/redis/redis.conf
+    restart: always
+   
+  mysql: 
+    image: mysql
+    ports:
+      - 3306:3306
+    networks:
+      - mysql_network
+    environment:
+      - MYSQL_ROOT_PASSWORD=maoli
+    volumes:
+      - ./compose/mysql/data:/var/lib/mysql
+      - ./compose/mysql/conf/my.cnf:/etc/mysql/my.cnf
+      - ./compose/mysql/init:/docker-entrypoint-initdb.d/
+    restart: always    
+       
+  web:
+    build: ./StarEstateManagement
+    expose:
+      - "8000"
+    volumes:
+      - ./StarEstateManagement:/StarEstateManagement
+    networks:
+      - mysql_network
+      - redis_network
+      - nginx_network
+    depends_on:
+      - mysql
+      - redis
+    restart: always
+    tty: true
+    stdin_open: true
+
+  nginx:
+    build: ./compose/nginx
+    expose:
+      - "80"
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./compose/nginx/conf:/etc/nginx
+      - ./compose/nginx/html:/usr/share/nginx/html
+      - ./compose/nginx/logs:/var/log/nginx
+    networks:
+      - nginx_network
+    depends_on:
+      - web
+    restart: always

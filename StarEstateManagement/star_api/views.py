@@ -1,40 +1,30 @@
 import binascii
 import datetime
-
-import functools
+import os
 import random
 import time
-import xlsxwriter
 import ujson
+import xlwt
 from io import BytesIO
 
-import xlwt
+from django.conf import settings
 from django_filters.views import FilterView
-
-from utils.aliyun_oss import bucket
-from asgiref.sync import async_to_sync
-from django.contrib.auth import authenticate, login, get_user, get_user_model, logout
-from django.contrib.auth.decorators import login_required
-from django.contrib.auth.hashers import check_password
+from django.contrib.auth import authenticate, login, logout
 from django.db import transaction
-from django.db.models import F, Q, Count, Sum
-from django.db.models.functions import ExtractWeekDay, ExtractIsoWeekDay
+from django.db.models import F, Q, Count
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.http import HttpResponse, JsonResponse
-from django.core.cache import cache
-from django.utils.decorators import method_decorator
-from django.views.decorators.http import require_http_methods
-from django_redis import get_redis_connection
 from rest_framework import status
 from rest_framework.authentication import get_authorization_header
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.response import Response
-from rest_framework.decorators import action
-
-from utils.comment_pagination import CommentsPagination
-from utils.constant import *
-from utils.fuzzy_search import *
+from rest_framework.decorators import action, permission_classes
+from utils.custom_pagination import CommentsPagination
+from utils.custom_permission import AdminPermission, UserPermission
+from utils.aliyun_oss import bucket
+from utils.custom_search import UserFilter, ServiceFilter, ActivityApplyFilter, PublicityFilter, RepairsFilter, \
+    EvaluateFilter, CommentsFilter, PaymentFilter, UserPaymentFilter, ParkingFilter, HouseFilter, MessageFilter
 from utils.send_login_code import SendSms
 from .serializer import *
 
@@ -55,7 +45,7 @@ def change_cache(sender, instance, *args, **kwargs):
         cache.delete(sender.__name__.lower())
 
 
-# 用户个人信息数据模型器类
+# 用户信息数据模型器类
 class UserModelViewSet(ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserModelSerializers
@@ -67,13 +57,22 @@ class UserModelViewSet(ModelViewSet):
         cache.incr('all_user')
         return Response({'code': 0}, status=status.HTTP_201_CREATED)
 
+    def update(self, request, *args, **kwargs):
+        """
+        用户信息修改
+        """
+        # 如果要修改信息的用户和当前用户不一致且当前用户不是管理员则不允许修改
+        if request.user.pk != self.get_object().pk and request.user.group != 2:
+            return Response({'code': 1}, status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
+
     def destroy(self, request, *args, **kwargs):
         super().destroy(request, *args, **kwargs)
         # 删除用户，社区总人数-1
         cache.decr('all_user')
         return Response({'code': 0}, status=status.HTTP_204_NO_CONTENT)
 
-    @action(methods=['get'], detail=False, url_path='worker')
+    @action(methods=['get'], detail=False, url_path='worker', permission_classes=[AdminPermission])
     def get_worker(self, request):
         '''
         获取可执行任务的维修师傅的工号和名字
@@ -99,7 +98,7 @@ class UserModelViewSet(ModelViewSet):
             return Response({'code': 0}, status=status.HTTP_200_OK)
         return Response({'code': 1}, status=status.HTTP_403_FORBIDDEN)
 
-    @action(methods=['get'], detail=False, url_path='data')
+    @action(methods=['get'], detail=False, url_path='data', permission_classes=[AdminPermission])
     def get_data(self, request):
         '''
         用于获取今日用户数据信息
@@ -143,7 +142,7 @@ class UserModelViewSet(ModelViewSet):
         # 获取指定当前用户信息并进行序列化
         return Response(self.get_serializer(self.get_queryset().get(username=request.user.username)).data)
 
-    @action(methods=['get'], detail=False, url_path='id')
+    @action(methods=['get'], detail=False, url_path='id', permission_classes=[AdminPermission])
     def get_id(self, request):
         '''
         获取全部用户的姓名和id
@@ -174,15 +173,13 @@ class UserModelViewSet(ModelViewSet):
             # 获取文件格式
             filetype = '.png' if avatar.content_type == 'image/png' else '.jpg'
             # 拼接文件名
-            filename = f'{request.user.username}{avatar.name[:avatar.name.rfind(".")]}'+filetype
+            filename = f'{request.user.username}{avatar.name[:avatar.name.rfind(".")]}' + filetype
             # 将文件上传oss并获取响应结果
             res = bucket.put_object(f'media/avatar/{filename}', avatar.file)
             # 如果响应状态码=200则上传成功更新用户头像
             if res.status == 200:
-                res = {'code': 0, 'avatar': settings.OSS_HTTP_URL + f'media/avatar/{filename}'}
+                res = {'code': 0, 'avatar': settings.OSS_HTTPS_URL + f'media/avatar/{filename}'}
         return Response(res, status=status.HTTP_201_CREATED)
-
-
 
 
 # 用户服务报修数据模型器类
@@ -191,6 +188,10 @@ class UserServiceModelViewSet(ModelViewSet, FilterView):
     serializer_class = UserServiceSerializers
     filterset_class = ServiceFilter
 
+    def get_queryset(self):
+        # 只返回当前用户相关的数据
+        return UserService.objects.filter(username=self.request.user)
+
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
         # 获取删除对象
@@ -198,7 +199,7 @@ class UserServiceModelViewSet(ModelViewSet, FilterView):
         super().destroy(request, *args, **kwargs)
         try:
             # 如果任务状态为0则说明未被处理此时需要删除后台请求数据
-            if instance.status != 6 :
+            if instance.status != 6:
                 # 如果删除的报修任务类型是A则说明是活动申请
                 if instance.type == 'A':
                     # 将后台活动申请的记录也删除
@@ -222,17 +223,19 @@ class UserServiceModelViewSet(ModelViewSet, FilterView):
         :return: 包含判断结果的JSON响应数据
         '''
         try:
+            # 获取订单类型
+            type = request.query_params.get('order_type')
+            # 获取订单号
+            order_id = request.query_params.get('id')
+            # 根据类型指定过滤条件
+            queryset_filter = Q(type='A') if type == '1' else ~Q(type='A')
             # 尝试根据传入的订单id获取与当前用户匹配的用户服务记录
-            self.get_queryset().get(Q(order_id=request.query_params.get('id')) & Q(username__id=request.user.pk))
+            self.get_queryset().get(Q(order_id=order_id) & queryset_filter & Q(username__id=request.user.pk))
         except UserService.DoesNotExist:
             # 如果找不到则返回1表示不存在
             return Response({'code': 1})
         # 否则返回0表示存在
         return Response({'code': 0})
-
-    def get_queryset(self):
-        # 只返回当前用户相关的数据
-        return UserService.objects.filter(username=self.request.user)
 
 
 # 活动申请数据模型器类
@@ -275,6 +278,12 @@ class ActivityApplyModelViewSet(ModelViewSet):
         UserService.objects.filter(order_id=self.get_object().id).update(status=request.data.get('status'))
         return Response({'code': 0})
 
+    def destroy(self, request, *args, **kwargs):
+        # 如果请求已被受理则需要管理员权限才能删除
+        if self.get_object().status and request.user.group != 2:
+            return Response({'code': 1}, status=status.HTTP_403_FORBIDDEN)
+        return super().destroy(request, *args, **kwargs)
+
 
 # 社区公示数据模型器类
 class PublicityModelViewSet(ModelViewSet):
@@ -313,7 +322,7 @@ class PublicityModelViewSet(ModelViewSet):
             return Response({'code': 1})
         return super().update(request, *args, **kwargs)
 
-    @action(methods=['get'], detail=False, url_path='progress')
+    @action(methods=['get'], detail=False, url_path='progress', permission_classes=[AdminPermission])
     def get_progress(self, request):
         '''
         获取活动参与进度、缴费参与进度
@@ -380,7 +389,7 @@ class PublicityModelViewSet(ModelViewSet):
         }
         return Response(data)
 
-    @action(methods=['get'], detail=False, url_path='ranking')
+    @action(methods=['get'], detail=False, url_path='ranking', permission_classes=[AdminPermission])
     def activity_ranking(self, request):
         '''
         获取所有活动对应的参与人数
@@ -395,7 +404,7 @@ class PublicityModelViewSet(ModelViewSet):
         }
         return Response(data)
 
-    @action(methods=['post'], detail=False, url_path='images')
+    @action(methods=['post'], detail=False, url_path='images', permission_classes=[AdminPermission])
     def upload_images(self, request):
         """
         上传公示图片
@@ -405,7 +414,8 @@ class PublicityModelViewSet(ModelViewSet):
         # 获取文件对象
         image = request.FILES.get('image')
         # 获取数据库最后一个id
-        id = self.get_queryset().order_by('-id')[0].id
+        queryset = self.get_queryset().order_by('-id')
+        id = queryset[0].id if queryset else 0
         res = {
             'code': 1
         }
@@ -414,10 +424,10 @@ class PublicityModelViewSet(ModelViewSet):
             # 获取文件格式
             filetype = '.png' if image.content_type == 'image/png' else '.jpg'
             # 将文件上传oss并获取响应结果
-            res = bucket.put_object(f'media/image/{id+1}' + filetype, image.file)
+            res = bucket.put_object(f'media/image/{id + 1}' + filetype, image.file)
             # 如果响应状态码=200则上传成功更新活动图片
             if res.status == 200:
-                res = {'code': 0, 'img_url': settings.OSS_HTTP_URL + f'media/image/{id+1}' + filetype}
+                res = {'code': 0, 'img_url': settings.OSS_HTTPS_URL + f'media/image/{id + 1}' + filetype}
         return Response(res, status=status.HTTP_201_CREATED)
 
 
@@ -426,6 +436,7 @@ class RepairsApplyModelViewSet(ModelViewSet):
     queryset = RepairsApply.objects.all()
     serializer_class = RepairsApplySerializers
     filterset_class = RepairsFilter
+
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
@@ -437,6 +448,12 @@ class RepairsApplyModelViewSet(ModelViewSet):
         UserService.objects.create(username_id=request.user.pk, name=request.data.get('name'),
                                    order_id=res.data.get('id'), type=res.data.get('type'))
         return Response({'code': 0}, status=status.HTTP_201_CREATED)
+
+    def destroy(self, request, *args, **kwargs):
+        # 如果请求已被受理则需要管理员权限才能删除
+        if self.get_object().status and request.user.group != 2:
+            return Response({'code': 1}, status=status.HTTP_403_FORBIDDEN)
+        return super().destroy(request, *args, **kwargs)
 
 
 # 评价反馈数据模型器类
@@ -456,15 +473,22 @@ class EvaluateModelViewSet(ModelViewSet):
             # 根据传入的记录id把对应任务状态改为7表示已评价，分数改为传入的分数
             obj.objects.filter(id=request.data.get('record_id')).update(status=7, score=request.data.get('score'))
         else:
+            order_type = request.data.get('order_type')
             # 如果是反馈则获取反馈任务对象
-            instance = obj.objects.filter(order_id=request.data.get('record_id'))
+            queryset = obj.objects.filter(order_id=request.data.get('record_id'))
+            # 如果order_type==1则说明是活动报名的反馈
+            if order_type == 1:
+                queryset = queryset.filter(type='A')
+            # 否则是故障维修的反馈
+            elif order_type == 0:
+                queryset = queryset.filter(~Q(type='A'))
             # 修改任务状态为6表示反馈中
-            instance.update(status=6)
+            queryset.update(status=6)
             # 将反馈任务名记录
-            request.data['name'] = instance.first().name
+            request.data['name'] = queryset.first().name
         return super().create(request, *args, **kwargs)
 
-    @action(methods=['get'], detail=False, url_path='data')
+    @action(methods=['get'], detail=False, url_path='data', permission_classes=[AdminPermission])
     def get_data(self, request):
         '''
         获取今日各类评价数据
@@ -614,7 +638,7 @@ class PaymentModelViewSet(ModelViewSet):
                 update(status=3, order_id=res.data.get('id'))
         return Response({'code': 0}, status=status.HTTP_201_CREATED)
 
-    @action(methods=['get'], detail=False, url_path='data')
+    @action(methods=['get'], detail=False, url_path='data', permission_classes=[AdminPermission])
     def get_data(self, request):
         '''
         获取今日社区费用缴费情况数据
@@ -630,27 +654,16 @@ class PaymentModelViewSet(ModelViewSet):
         }
         return Response(data)
 
-    # @action(methods=['get'], detail=False, url_path='record')
-    # def get_record(self, request):
-    #     '''
-    #     获取今日社区费用缴费情况数据
-    #     :param request: 请求对象
-    #     :return: 包含今日收费数据的JSON数据响应对象
-    #     '''
-    #     payment_group = self.get_queryset().extra(select={'name': 'type'}).values('name').annotate(value=Count('*'))
-    #     data = {
-    #         'code': 0,
-    #         'list': payment_group,
-    #         'total': cache.get('all_user')
-    #     }
-    #     return Response(data)
-
 
 # 用户缴费情况数据模型器类
 class UserPaymentsModelViewSet(ModelViewSet):
     queryset = UserPayment.objects.all()
     serializer_class = UserPaymentSerializers
     filterset_class = UserPaymentFilter
+
+    def get_queryset(self):
+        # 只返回当前用户相关的数据
+        return UserPayment.objects.filter(username=self.request.user)
 
     def list(self, request, *args, **kwargs):
         # 获取本月收费款项的id列表
@@ -672,10 +685,9 @@ class UserPaymentsModelViewSet(ModelViewSet):
 
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
         # 如果是反馈中则删除后台反馈记录
-        if instance.status == 6:
-            Evaluate.objects.filter(username_id=request.user.pk, name=instance.name).delete()
+        if self.get_object().status == 6:
+            Evaluate.objects.filter(username_id=request.user.pk, name=self.get_object().name).delete()
         return super().destroy(request, *args, **kwargs)
 
     @action(methods=['get'], detail=False, url_path='exists')
@@ -694,10 +706,6 @@ class UserPaymentsModelViewSet(ModelViewSet):
         # 否则说明订单存在
         return Response({'code': 0})
 
-    def get_queryset(self):
-        # 只返回当前用户相关的数据
-        return UserPayment.objects.filter(username=self.request.user)
-
 
 # 车位使用数据模型器类
 class ParkingModelViewSet(ModelViewSet):
@@ -705,7 +713,12 @@ class ParkingModelViewSet(ModelViewSet):
     serializer_class = ParkingSerializers
     filterset_class = ParkingFilter
 
-    @action(methods=['get'], detail=False, url_path='progress')
+    def create(self, request, *args, **kwargs):
+        # 只允许自己的名义购买车位
+        request.data['username'] = request.user.pk
+        return super().create(request, *args, **kwargs)
+
+    @action(methods=['get'], detail=False, url_path='progress', permission_classes=[AdminPermission])
     def get_progress(self, request):
         '''
         获取各区车位使用数据百分比
@@ -724,7 +737,7 @@ class ParkingModelViewSet(ModelViewSet):
         }
         return Response(data)
 
-    @action(methods=['get'], detail=False, url_path='data')
+    @action(methods=['get'], detail=False, url_path='data', permission_classes=[AdminPermission])
     def get_data(self, request):
         '''
         获取各区车位使用情况
@@ -746,7 +759,12 @@ class HouseModelViewSet(ModelViewSet):
     serializer_class = HouseSerializers
     filterset_class = HouseFilter
 
-    @action(methods=['get'], detail=False, url_path='progress')
+    def create(self, request, *args, **kwargs):
+        # 只允许自己的名义购买房屋
+        request.data['username'] = request.user.pk
+        return super().create(request, *args, **kwargs)
+
+    @action(methods=['get'], detail=False, url_path='progress', permission_classes=[AdminPermission])
     def get_progress(self, request):
         '''
         获取各区房屋使用数据百分比
@@ -765,7 +783,7 @@ class HouseModelViewSet(ModelViewSet):
         }
         return Response(data)
 
-    @action(methods=['get'], detail=False, url_path='data')
+    @action(methods=['get'], detail=False, url_path='data', permission_classes=[AdminPermission])
     def get_data(self, request):
         '''
         获取各区房屋使用情况
@@ -832,6 +850,7 @@ class UserViewSet(ModelViewSet):
     '''
     authentication_classes = []
     queryset = User.objects.all()
+    permission_classes = []
     serializer_class = UserModelSerializers
 
     @action(methods=['post'], detail=False, url_path='exist')
@@ -993,9 +1012,11 @@ class MessageModelViewSet(ModelViewSet):
             instance.update(status=1)
             # 获取用户服务对象和用户缴费对象
             try:
-                UserService.objects.filter(order_id=instance.first().record_id, name=instance.first().name).update(status=3)
+                UserService.objects.filter(order_id=instance.first().record_id, name=instance.first().name).update(
+                    status=3)
             except:
-                UserPayment.objects.filter(order_id=instance.first().record_id, name=instance.first().name).update(status=3)
+                UserPayment.objects.filter(order_id=instance.first().record_id, name=instance.first().name).update(
+                    status=3)
         # 将信息与当前用户绑定
         request.data['username'] = request.user.pk
         return super().create(request, *args, **kwargs)
@@ -1004,8 +1025,8 @@ class MessageModelViewSet(ModelViewSet):
         # 返回接收人id等于当前用户的信息
         return Response({
             'code': 0,
-            'list': self.get_serializer(self.get_queryset().filter(recipient_id=request.user.username), many=True, fields=('id',
-                                'recipient_name', 'create_time', 'content')).data
+            'list': self.get_serializer(self.get_queryset().filter(recipient_id=request.user.username), many=True,
+                                        fields=('id', 'recipient_name', 'create_time', 'content')).data
         })
 
 
@@ -1071,17 +1092,17 @@ def data_show(request):
         # 获取社区基本数据
         case '0':
             # 如果缓存数据不完整则重新获取缓存
-            if len(cache.get_many(['all_user', 'house', 'resident',  'parking'])) < 4:
+            if len(cache.get_many(['all_user', 'house', 'resident', 'parking'])) < 4:
                 # 每30天更新一次缓存
                 cache.set_many({
                     # 获取总人数
                     'all_user': User.objects.count(),
                     # 获取剩余房屋数
-                    'house': 405-House.objects.all().count(),
+                    'house': 405 - House.objects.all().count(),
                     # 获取已使用房屋数
                     'resident': House.objects.all().count(),
                     # 获取剩余车位数
-                    'parking': 405-Parking.objects.all().count()
+                    'parking': 405 - Parking.objects.all().count()
                 }, 60 * 60 * 24 * 30)
             data = {
                 'code': 0,

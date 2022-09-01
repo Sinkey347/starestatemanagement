@@ -8,9 +8,10 @@ https://docs.djangoproject.com/en/3.2/howto/deployment/asgi/
 """
 
 import os
+from . import routing
 from django.core.asgi import get_asgi_application
 from channels.routing import ProtocolTypeRouter, URLRouter
-from . import routing
+
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'StarEstateManagement.settings')
 

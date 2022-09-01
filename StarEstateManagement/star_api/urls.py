@@ -1,8 +1,7 @@
-from django.urls import path, include
-from django.conf import settings
-from django.conf.urls import static
-from rest_framework.routers import DefaultRouter
 from . import views
+from django.urls import path
+from rest_framework.routers import DefaultRouter
+
 
 router = DefaultRouter()  # 实例化路由集对象
 router.register("users", views.UserModelViewSet)
@@ -17,7 +16,7 @@ router.register('payments', views.UserPaymentsModelViewSet)
 router.register('parking', views.ParkingModelViewSet)
 router.register('house', views.HouseModelViewSet)
 router.register('messages', views.MessageModelViewSet)
-router.register('', views.UserViewSet)
+router.register('account', views.UserViewSet)
 
 urlpatterns = [
                   path('download/', views.export_excel),

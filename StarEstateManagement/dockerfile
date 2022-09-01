@@ -1,0 +1,7 @@
+FROM python:3.10.5-slim-buster
+LABEL org.opencontainers.image.authors="sinkey347@qq.com"
+RUN mkdir StarEstateManagement
+WORKDIR /StarEstateManagement
+COPY . /StarEstateManagement
+RUN apt-get -y update&&apt-get -y install gcc netcat&&pip3 install --upgrade pip&&pip3 install -r requirements.txt&&chmod +x django_init.sh&&pip3 install uwsgi 
+ENTRYPOINT /bin/bash django_init.sh

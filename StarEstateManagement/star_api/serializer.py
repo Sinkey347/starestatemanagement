@@ -1,12 +1,10 @@
-import datetime
-
+from rest_framework import serializers
 from django.contrib.auth.hashers import make_password
 from django.core.cache import cache
-from rest_framework import serializers
 from utils.constant import REDIS_CLIENT
+from utils.custom_serializer import DynamicFieldsModelSerializer
 from star_db.models import User, ActivityApply, Publicity, RepairsApply, UserService, Evaluate, Comments, \
     Payment, UserPayment, Parking, House, Message
-from utils.dynamicFieModelSerializer import DynamicFieldsModelSerializer
 
 
 class UserModelSerializers(DynamicFieldsModelSerializer):
@@ -28,7 +26,7 @@ class UserModelSerializers(DynamicFieldsModelSerializer):
             }
         }
 
-    # 3、数据效验
+    # 3、数据操作
     def create(self, validated_data):
         """
         创建用户信息
@@ -50,7 +48,7 @@ class UserModelSerializers(DynamicFieldsModelSerializer):
             validated_data['password'] = make_password(validated_data.get('password'))
         return super().update(instance, validated_data)
 
-    # 4、模型类操作
+    # 自定义方法字段
     def get_address(self, obj):
         if isinstance(obj, User) or obj.get('id'):
             user_house = House.objects.filter(username_id=obj.id).first()
@@ -236,4 +234,3 @@ class MessageSerializers(DynamicFieldsModelSerializer):
         fields = [
             'id', 'username', 'recipient_id', 'recipient_name', 'content', 'create_time', 'user_id'
         ]
-

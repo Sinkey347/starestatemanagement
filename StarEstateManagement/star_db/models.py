@@ -1,7 +1,6 @@
-from django.contrib.auth import get_user_model
 from django.db import models
 from django.contrib.auth.models import AbstractUser
-from utils.constant import *
+from utils.constant import AVATAR_DEFAULT_IMAGE, PUBLICITY_DEFAULT_IMAGE
 
 
 # Create your models here.
@@ -44,8 +43,8 @@ class Publicity(models.Model):
                                  db_index=True, db_constraint=False)
     type = models.SmallIntegerField(default=0, verbose_name='通知类型')  # 0社区公告、1活动发布、2收费通知
     title = models.CharField(max_length=10, verbose_name='通知标题')
-    content = models.CharField(max_length=200, null=True, verbose_name='通知内容')
-    img = models.CharField(max_length=100, verbose_name='通知图片')
+    content = models.CharField(max_length=300, null=True, verbose_name='通知内容')
+    img = models.CharField(max_length=100, default=PUBLICITY_DEFAULT_IMAGE, verbose_name='通知图片')
     address = models.CharField(max_length=30, null=True, verbose_name='活动地址')
     money = models.DecimalField(max_digits=10, decimal_places=2, default=0.0, verbose_name='收费金额')
     start = models.DateTimeField(max_length=19, null=True, verbose_name='开始时间')
@@ -68,7 +67,6 @@ class ActivityApply(models.Model):
                                   db_constraint=False)
     username = models.ForeignKey(User, on_delete=models.CASCADE, related_name='u_activity_apply',
                                  db_constraint=False)
-    # registration = models.SmallIntegerField(default=0, verbose_name='活动报名情况')
     status = models.SmallIntegerField(default=0, verbose_name='申请状态')  # 0待处理、1已受理、2维修中、3已完成、4已同意、5已拒绝、6反馈中、7已评价
     create_time = models.DateTimeField(max_length=19, auto_now_add=True, verbose_name='创建时间')
     update_time = models.DateTimeField(max_length=19, auto_now=True, verbose_name='更新时间')
@@ -85,7 +83,6 @@ class RepairsApply(models.Model):
     """
     维修申请管理
     """
-    # wx_id = models.CharField(max_length=10, primary_key=True, verbose_name='维修申请id')
     name = models.CharField(max_length=100, null=True, verbose_name='维修任务')
     type = models.CharField(default='P3', max_length=3, verbose_name='维修类型')  # C社区报修 P个人报修，0供水、1供电、2燃气，3其他
     status = models.SmallIntegerField(default=0, verbose_name='维修状态')  # # 0待处理、1已受理、2维修中、3已完成、4已同意、5已拒绝、6反馈中、7已评价
@@ -145,7 +142,7 @@ class Comments(models.Model):
     username = models.ForeignKey(User, on_delete=models.CASCADE,
                                  related_name='u_comments', db_index=True, db_constraint=False)
     comment = models.CharField(max_length=300, null=True, verbose_name='提交评论内容')
-    replay_name = models.CharField(max_length=5, null=True, verbose_name='回复人姓名')
+    replay_name = models.CharField(max_length=10, null=True, verbose_name='回复人姓名')
     type = models.BooleanField(default=0, verbose_name='评论类型')  # 0留言、1评论
     page_name = models.CharField(max_length=30, default='留言板', verbose_name='来源页面名字')
     page_id = models.SmallIntegerField(default=0, verbose_name='来源页面id')

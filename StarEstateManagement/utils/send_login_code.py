@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-# This file is auto-generated, don't edit it. Thanks.
-import sys
-
-from typing import List
 from django.conf import settings
 from alibabacloud_dysmsapi20170525.client import Client as Dysmsapi20170525Client
 from alibabacloud_tea_openapi import models as open_api_models
@@ -16,7 +11,10 @@ class SendSms:
         pass
 
     @staticmethod
-    def create_client(access_key_id: str, access_key_secret: str) -> Dysmsapi20170525Client:
+    def create_client(
+            access_key_id: str,
+            access_key_secret: str,
+    ) -> Dysmsapi20170525Client:
         """
         使用AK&SK初始化账号Client
         @param access_key_id:
@@ -35,30 +33,34 @@ class SendSms:
         return Dysmsapi20170525Client(config)
 
     @staticmethod
-    def main(phone, code) -> None:
-        client = SendSms.create_client(settings.AccessKey_ID, settings.AccessKey_Secret)
+    def main(phone, code, *args, **kwargs) -> None:
+        client = SendSms.create_client(settings.ACCESSKEY_ID, settings.ACCESSKEY_SECRET)
+        code_dict = {'code': code}
         send_sms_request = dysmsapi_20170525_models.SendSmsRequest(
-            sign_name='阿里云短信测试',
-            template_code='SMS_154950909',
             phone_numbers=phone,
-            template_param=f'{"code":{code}}'
+            sign_name=settings.SIGN_NAME,
+            template_code=settings.TEMPLATE_CODE,
+            template_param=str(code_dict)
         )
         runtime = util_models.RuntimeOptions()
         try:
             # 复制代码运行请自行打印 API 的返回值
-            client.send_sms_with_options(send_sms_request, runtime)
+            res = client.send_sms_with_options(send_sms_request, runtime)
         except Exception as error:
             # 如有需要，请打印 error
             UtilClient.assert_as_string(error.message)
 
     @staticmethod
-    async def main_async(phone, code) -> None:
-        client = SendSms.create_client(settings.AccessKey_ID, settings.AccessKey_Secret)
+    async def main_async(
+            phone, code, *args, **kwargs
+    ) -> None:
+        client = SendSms.create_client(settings.ACCESSKEY_ID, settings.ACCESSKEY_SECRET)
+        code_dict = {'code': code}
         send_sms_request = dysmsapi_20170525_models.SendSmsRequest(
-            sign_name='阿里云短信测试',
-            template_code='SMS_154950909',
             phone_numbers=phone,
-            template_param=f'{"code":{code}}'
+            sign_name=settings.SIGN_NAME,
+            template_code=settings.TEMPLATE_CODE,
+            template_param=str(code_dict)
         )
         runtime = util_models.RuntimeOptions()
         try:
@@ -68,6 +70,3 @@ class SendSms:
             # 如有需要，请打印 error
             UtilClient.assert_as_string(error.message)
 
-
-if __name__ == '__main__':
-    SendSms.main(sys.argv[1:])

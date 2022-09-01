@@ -1,0 +1,5 @@
+FROM nginx
+LABEL org.opencontainers.image.authors="sinkey347@qq.com"
+RUN rm -rf /etc/nginx/nginx.conf
+COPY . /etc/nginx
+CMD ["nginx", "-g", "daemon off;"]
