@@ -39,6 +39,8 @@ def change_cache(sender, instance, *args, **kwargs):
     :param kwargs: 关键字参数
     :return:
     """
+    cache.get_or_set('mysql', 0, 60 * 60 * 24)
+    cache.get_or_set('redis', 0, 60 * 60 * 24)
     cache.incr('mysql')
     cache.incr('redis')
     if sender.__name__ == 'Parking' or sender.__name__ == 'House':
@@ -107,8 +109,8 @@ class UserModelViewSet(ModelViewSet):
         '''
         user_group = ['普通用户', '维修师傅', '管理员']
         # 统计手机号登录和账号登录的用户数
-        phone_login = REDIS_CLIENT.bitcount('phone')
-        id_login = REDIS_CLIENT.bitcount('id')
+        phone_login = cache.get('phone', 0)
+        id_login = cache.get('id', 0)
         res = {
             'code': 0,
             # 获取登录用户信息
@@ -816,6 +818,10 @@ def login_success(request, user, login_type):
     key = get_authorization_header(request).split()
     # 获取当前用户的username和name组成key并序列化
     user_key = ujson.dumps({'username': request.user.username, 'name': request.user.name}, ensure_ascii=False)
+    # 如果login_ranking不存在则进行初始化
+    if not REDIS_CLIENT.exists('login_ranking'):
+        REDIS_CLIENT.zadd('login_ranking', {0: 0})
+        REDIS_CLIENT.expireat('login_ranking', 60 * 60 * 24)
     # 如果user不存在于有序集合中则将它加入有序集合并设置分数为1表示登录了一次
     if REDIS_CLIENT.zscore('login_ranking', user_key) is None:
         REDIS_CLIENT.zadd('login_ranking', {user_key: 1})
@@ -826,8 +832,13 @@ def login_success(request, user, login_type):
     else:
         # 如果已存在则将分数+1
         REDIS_CLIENT.zincrby('login_ranking', 1, user_key)
-    # 将用户登录记录按登录方式保存到位图的
-    REDIS_CLIENT.setbit(login_type, request.user.pk, 1)
+    # 登录方式+1
+    if not cache.get(login_type, 0):
+        cache.set(login_type, 0, 60*60*24)
+    cache.incr(login_type)
+    # 存入数据后设置过期时间
+    if REDIS_CLIENT.bitcount(login_type) == 1:
+        REDIS_CLIENT.expireat(login_type, 60 * 60 * 24)
     # 如果token还在有效期则不生成新token
     token = key[1] if key and cache.ttl(key) > 0 else binascii.hexlify(os.urandom(20)).decode()
     data['token'] = token
@@ -992,6 +1003,7 @@ class UserViewSet(ModelViewSet):
             # 写入数据
             serializer.save()
             # 社区总用户+1
+            cache.get_or_set('all_user', 0, 60 * 60 * 24)
             cache.incr('all_user')
             return Response({'code': 0}, status=status.HTTP_201_CREATED)
         return Response({'code': 1}, status=status.HTTP_204_NO_CONTENT)
