@@ -845,9 +845,6 @@ def login_success(request, user, login_type):
     if not cache.get(login_type, 0):
         cache.set(login_type, 0, 60*60*24)
     cache.incr(login_type)
-    # 存入数据后设置过期时间
-    if REDIS_CLIENT.bitcount(login_type) == 1:
-        REDIS_CLIENT.expireat(login_type, 60 * 60 * 24)
     # 如果token还在有效期则不生成新token
     token = key[1] if key and cache.ttl(key) > 0 else binascii.hexlify(os.urandom(20)).decode()
     data['token'] = token
