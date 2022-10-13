@@ -96,9 +96,18 @@ class UserModelViewSet(ModelViewSet):
         :param request:请求对象
         :return: 校验结果
         '''
-        if request.user.group == 2:
-            return Response({'code': 0}, status=status.HTTP_200_OK)
-        return Response({'code': 1}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            # 根据当前用户的id获取最新用户组信息
+            group = self.get_queryset().get(id=request.user.id).group
+            # 如果是管理员则正常返回200
+            if group == 2:
+                return Response({'code': 0}, status=status.HTTP_200_OK)
+            # 如果不是管理员则返回403
+            return Response({'code': 1}, status=status.HTTP_403_FORBIDDEN)
+        # 如果用户不存在则返回401
+        except User.DoesNotExist:
+            return Response({'code': 1}, status=status.HTTP_401_UNAUTHORIZED)
+            
 
     @action(methods=['get'], detail=False, url_path='data', permission_classes=[AdminPermission])
     def get_data(self, request):
